@@ -1,0 +1,13 @@
+# Artefakty budowania / dev — nie wrzucamy do repo
+build/
+dist/
+*.spec
+__pycache__/
+shots/
+web/
+parse_regions.py
+shot.py
+shot_heads.py
+verify.py
+verify2.py
+AnatomiaForDzieci.spec

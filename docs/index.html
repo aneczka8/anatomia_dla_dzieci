@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#4a90d9">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Anatomia">
+  <link rel="manifest" href="manifest.json">
+  <title>Anatomia dla dzieci</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; }
+    body {
+      background: #e8f4f8;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      font-family: sans-serif;
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+    #header {
+      width: 100%;
+      background: #4a90d9;
+      color: white;
+      text-align: center;
+      padding: 10px;
+      font-size: 1.15em;
+      font-weight: bold;
+      letter-spacing: 1px;
+      flex: none;
+    }
+    #bar {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      flex: none;
+    }
+    #hint { color: #555; font-size: 0.85em; text-align: center; }
+    #back-btn {
+      display: none;
+      padding: 7px 18px;
+      background: #4a90d9;
+      color: white;
+      border: none;
+      border-radius: 18px;
+      font-size: 0.95em;
+      cursor: pointer;
+    }
+    #back-btn.visible { display: inline-block; }
+    #canvas-container { flex: 1; display: flex; align-items: center; justify-content: center; }
+    canvas { display: block; touch-action: none; }
+    #label {
+      position: fixed;
+      bottom: 22px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(74,144,217,0.95);
+      color: white;
+      padding: 10px 26px;
+      border-radius: 22px;
+      font-size: 1.3em;
+      font-weight: bold;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.25s;
+      white-space: nowrap;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.2);
+    }
+    #label.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="header">Anatomia dla dzieci</div>
+  <div id="bar">
+    <button id="back-btn">← Wróć</button>
+    <span id="hint">Dotknij postaci, aby ją powiększyć</span>
+  </div>
+  <div id="canvas-container"><canvas id="canvas"></canvas></div>
+  <div id="label"></div>
+
+<script src="regions.js"></script>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const labelEl = document.getElementById('label');
+const backBtn = document.getElementById('back-btn');
+const hintEl = document.getElementById('hint');
+const DEBUG = location.search.includes('debug');
+
+let state = 'all';
+
+// ── viewBox per state (scene coords) ──
+// body image 607x1080 → scaledToHeight(700) = 393.4 wide, drawn at (0,0); centered by panning -28.3
+// head  image 593x396  → scaledToWidth(700)  = 467  tall, drawn at (-80,0) (matches PyQt moveBy)
+const BODY_W = 607 * 700 / 1080;          // 393.4
+const HEAD_H = 396 * 700 / 593;           // 467.4
+const viewBoxes = {
+  all:        [0, 0, 450, 750],
+  boy_front:  [-(450-BODY_W)/2, 0, 450, 750],
+  girl_front: [-(450-BODY_W)/2, 0, 450, 750],
+  boy_back:   [-(450-BODY_W)/2, 0, 450, 750],
+  girl_back:  [-(450-BODY_W)/2, 0, 450, 750],
+  boy_head:   [-90, -12, 720, 492],
+  girl_head:  [-90, -12, 720, 492],
+};
+
+// ── images ──
+const imgs = {};
+const imgSrcs = {
+  boy_front:'obrazki/jpg2png/boy_front.png', girl_front:'obrazki/jpg2png/girl_front.png',
+  boy_back:'obrazki/jpg2png/boy_back.png',   girl_back:'obrazki/jpg2png/girl_back.png',
+  boy_head:'obrazki/jpg2png/boy_head.png',   girl_head:'obrazki/jpg2png/girl_head.png',
+};
+let loaded = 0;
+const totalImgs = Object.keys(imgSrcs).length;
+for (const [k, src] of Object.entries(imgSrcs)) {
+  const img = new Image();
+  img.onload = () => { if (++loaded === totalImgs) draw(); };
+  img.src = src;
+  imgs[k] = img;
+}
+
+// ── audio ──
+const sounds = {};
+const audioFiles = ['bark','biodro','brew','broda','brzuch','czolo','dekolt','dlon','glowa',
+ 'jezyk','kark','klatka_piersiowa','kolano','kostka','lokiec','lydka','moszna','nadgarstek',
+ 'nos','oko','pachwina','palec','penis','pepek','pieta','plecy','policzek','posladek','powieka',
+ 'przedramie','ramie','reka','rzesy','skron','srom','stopa','szyja','tulow','ucho','udo','usta',
+ 'wlosy','zeby'];
+for (const k of audioFiles) {
+  const a = new Audio('dzwieki/' + k + '.wav');
+  a.preload = 'auto';
+  sounds[k] = a;
+}
+const niceLabel = {
+  bark:'bark', biodro:'biodro', brew:'brew', broda:'broda', brzuch:'brzuch', czolo:'czoło',
+  dekolt:'dekolt', dlon:'dłoń', glowa:'głowa', jezyk:'język', kark:'kark',
+  klatka_piersiowa:'klatka piersiowa', kolano:'kolano', kostka:'kostka', lokiec:'łokieć',
+  lydka:'łydka', moszna:'moszna', nadgarstek:'nadgarstek', nos:'nos', oko:'oko',
+  pachwina:'pachwina', palec:'palec', penis:'penis', pepek:'pępek', pieta:'pięta',
+  plecy:'plecy', policzek:'policzek', posladek:'pośladek', powieka:'powieka',
+  przedramie:'przedramię', ramie:'ramię', reka:'ręka', rzesy:'rzęsy', skron:'skroń',
+  srom:'srom', stopa:'stopa', szyja:'szyja', tulow:'tułów', ucho:'ucho', udo:'udo',
+  usta:'usta', wlosy:'włosy', zeby:'zęby'
+};
+let labelTimer;
+function playSound(key) {
+  const a = sounds[key];
+  if (a) { a.currentTime = 0; a.play().catch(()=>{}); }
+  labelEl.textContent = niceLabel[key] || key;
+  labelEl.classList.add('show');
+  clearTimeout(labelTimer);
+  labelTimer = setTimeout(() => labelEl.classList.remove('show'), 1800);
+}
+
+// ── build Path2D objects from REGIONS (curves preserved) ──
+const paths = {};
+for (const [name, r] of Object.entries(REGIONS)) {
+  const p = new Path2D();
+  for (const c of r.cmds) {
+    if (c[0] === 'moveTo') p.moveTo(c[1], c[2]);
+    else if (c[0] === 'lineTo') p.lineTo(c[1], c[2]);
+    else if (c[0] === 'cubicTo') p.bezierCurveTo(c[1], c[2], c[3], c[4], c[5], c[6]);
+    else if (c[0] === 'rect') {
+      const [x,y,w,h] = [c[1],c[2],c[3],c[4]];
+      p.ellipse(x+w/2, y+h/2, w/2, h/2, 0, 0, Math.PI*2);
+    }
+  }
+  paths[name] = p;
+}
+
+// ── region → sound lists per state (ORDER = original if/elif priority) ──
+const HEAD_COMMON = [
+  ['eye','oko'],['eyelid','powieka'],['nose','nos'],['eyebrow1','brew'],['eyebrow2','brew'],
+  ['lashes','rzesy'],['lips','usta'],['cheek1','policzek'],['cheek2','policzek'],
+  ['ear','ucho'],['temple','skron'],['chin','broda'],
+];
+const FRONT_COMMON = [
+  ['neck','szyja'],['cleavage','dekolt'],['chest','klatka_piersiowa'],['belly','brzuch'],
+  ['shoulder1','bark'],['shoulder2','bark'],['arm1','ramie'],['arm2','ramie'],
+  ['elbow1','lokiec'],['elbow2','lokiec'],['forearm1','przedramie'],['forearm2','przedramie'],
+  ['wrist1','nadgarstek'],['wrist2','nadgarstek'],['palm','dlon'],
+  ['finger1','palec'],['finger2','palec'],['toe1','palec'],['toe2','palec'],['hand','reka'],
+  ['hip1','biodro'],['hip2','biodro'],['thigh1','udo'],['thigh2','udo'],
+  ['knee1','kolano'],['knee2','kolano'],['calf1','lydka'],['calf2','lydka'],
+  ['heel','pieta'],['foot1','stopa'],['foot2','stopa'],['ankle','kostka'],
+];
+const BACK_COMMON = [
+  ['head1_back','glowa'],['head2_back','glowa'],['nape','kark'],
+  ['finger1_back','palec'],['hand_back','reka'],
+  ['shoulder1_back','bark'],['shoulder2_back','bark'],['arm1_back','ramie'],['arm2_back','ramie'],
+  ['elbow1_back','lokiec'],['elbow2_back','lokiec'],
+  ['forearm1_back','przedramie'],['forearm2_back','przedramie'],
+  ['wrist1_back','nadgarstek'],['wrist2_back','nadgarstek'],['palm_back','dlon'],
+  ['finger2_back','palec'],['back','plecy'],['buttock','posladek'],
+  ['thigh1_back','udo'],['thigh2_back','udo'],['calf1_back','lydka'],['calf2_back','lydka'],
+  ['heel1_back','pieta'],['heel2_back','pieta'],['foot_back','stopa'],['toe_back','palec'],
+  ['ankle1_back','kostka'],['ankle2_back','kostka'],
+];
+const regionLists = {
+  boy_head:  [...HEAD_COMMON, ['forehead_boy','czolo'], ['hair_boy','wlosy']],
+  girl_head: [...HEAD_COMMON, ['forehead_girl','czolo'], ['hair_girl','wlosy']],
+  boy_front: [...FRONT_COMMON, ['penis','penis'], ['scrotum','moszna'], ['head_boy','glowa']],
+  girl_front:[...FRONT_COMMON, ['vulva','srom'], ['head_girl','glowa']],
+  boy_back:  [...BACK_COMMON],
+  girl_back: [...BACK_COMMON, ['hair_girl_back','wlosy']],
+};
+
+// ── overview (all) thumbnails, faithful to PyQt scene_all ──
+const thumbs = [
+  { key:'boy_front',  x:0,   y:0,   mode:'h', s:310 },
+  { key:'girl_front', x:200, y:0,   mode:'h', s:310 },
+  { key:'boy_back',   x:0,   y:312, mode:'h', s:310 },
+  { key:'girl_back',  x:200, y:312, mode:'h', s:310 },
+  { key:'boy_head',   x:0,   y:624, mode:'w', s:200 },
+  { key:'girl_head',  x:200, y:624, mode:'w', s:200 },
+];
+const allZones = [
+  { key:'boy_front', x:0, y:0, w:200, h:310 },   { key:'girl_front', x:200, y:0, w:200, h:310 },
+  { key:'boy_back', x:0, y:312, w:200, h:310 },  { key:'girl_back', x:200, y:312, w:200, h:310 },
+  { key:'boy_head', x:0, y:624, w:200, h:126 },  { key:'girl_head', x:200, y:624, w:200, h:126 },
+];
+
+// ── sizing ──
+let scale = 1;
+function resize() {
+  const vb = viewBoxes[state];
+  const availW = Math.min(window.innerWidth, 540);
+  const availH = window.innerHeight - 110;
+  scale = Math.min(availW / vb[2], availH / vb[3]);
+  canvas.width  = Math.round(vb[2] * scale);
+  canvas.height = Math.round(vb[3] * scale);
+  draw();
+}
+
+// ── draw ──
+function draw() {
+  const vb = viewBoxes[state];
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.save();
+  ctx.scale(scale, scale);
+  ctx.translate(-vb[0], -vb[1]);
+
+  if (state === 'all') {
+    for (const t of thumbs) drawImg(t.key, t.x, t.y, t.mode, t.s);
+    ctx.strokeStyle = '#bcd6ea'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(200,0); ctx.lineTo(200,750);
+    ctx.moveTo(0,312); ctx.lineTo(450,312);
+    ctx.moveTo(0,624); ctx.lineTo(450,624);
+    ctx.stroke();
+  } else if (state.endsWith('_head')) {
+    drawImg(state, -80, 0, 'w', 700);
+    if (DEBUG) drawOverlay();
+  } else {
+    drawImg(state, 0, 0, 'h', 700);
+    if (DEBUG) drawOverlay();
+  }
+  ctx.restore();
+}
+
+function drawImg(key, x, y, mode, size) {
+  const img = imgs[key];
+  if (!img || !img.complete || !img.naturalWidth) return;
+  let w, h;
+  if (mode === 'h') { h = size; w = img.naturalWidth * (size / img.naturalHeight); }
+  else             { w = size; h = img.naturalHeight * (size / img.naturalWidth); }
+  ctx.drawImage(img, x, y, w, h);
+}
+
+function drawOverlay() {
+  const list = regionLists[state] || [];
+  ctx.lineWidth = 1;
+  ctx.font = '11px sans-serif';
+  for (let i = list.length - 1; i >= 0; i--) {
+    const [name, sound] = list[i];
+    const p = paths[name];
+    if (!p) continue;
+    const hue = (sound.charCodeAt(0) * 47 + sound.length * 13) % 360;
+    ctx.fillStyle = `hsla(${hue},80%,55%,0.4)`;
+    ctx.strokeStyle = `hsla(${hue},80%,30%,0.9)`;
+    ctx.fill(p);
+    ctx.stroke(p);
+  }
+}
+
+// ── hit testing (identity transform → scene coords directly) ──
+function pickRegion(sx, sy) {
+  const list = regionLists[state];
+  if (!list) return null;
+  for (const [name, sound] of list) {
+    const p = paths[name];
+    if (p && ctx.isPointInPath(p, sx, sy)) return sound;
+  }
+  return null;
+}
+
+function handlePoint(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const vb = viewBoxes[state];
+  const sx = (clientX - rect.left) / scale + vb[0];
+  const sy = (clientY - rect.top)  / scale + vb[1];
+
+  if (state === 'all') {
+    for (const z of allZones) {
+      if (sx >= z.x && sx < z.x+z.w && sy >= z.y && sy < z.y+z.h) {
+        enter(z.key);
+        return;
+      }
+    }
+    return;
+  }
+  const sound = pickRegion(sx, sy);
+  if (sound) playSound(sound);
+}
+
+function enter(key) {
+  state = key;
+  backBtn.classList.add('visible');
+  hintEl.textContent = 'Dotknij części ciała, aby usłyszeć nazwę';
+  resize();
+}
+function goBack() {
+  state = 'all';
+  backBtn.classList.remove('visible');
+  hintEl.textContent = 'Dotknij postaci, aby ją powiększyć';
+  resize();
+}
+
+canvas.addEventListener('click', e => handlePoint(e.clientX, e.clientY));
+canvas.addEventListener('touchend', e => {
+  if (e.cancelable) e.preventDefault();
+  const t = e.changedTouches[0];
+  handlePoint(t.clientX, t.clientY);
+}, { passive: false });
+backBtn.addEventListener('click', goBack);
+window.addEventListener('resize', resize);
+
+resize();
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloaded) return;
+    reloaded = true;
+    location.reload();   // gdy wejdzie nowa wersja, przeładuj raz automatycznie
+  });
+}
+</script>
+</body>
+</html>
